@@ -4,10 +4,10 @@ class ConektaController < ApplicationController
   before_action :load_current_rate, only: [:payment]
 
   def payment
-    return render_json_error if project.nil? || backer.nil? || backer.errors.any?
+    # validation is getting too long, extract.
+    return render_json_error if project.nil? || backer.nil? || backer.errors.any? || customer.nil?
     # second rescue bloc to move out
     begin
-      customer = create_customer(params[:conektaTokenId])
       # too much nesting ins this hash
       attributes = {
         currency: Rails.application.secrets.currency_code,
@@ -93,21 +93,26 @@ class ConektaController < ApplicationController
     nil
   end
 
+  def result
+    @result ||= Hash.new
+  end
+
+
   def backer
     @backer ||= create_backer
   rescue StandardError
     nil
   end
 
-  def result
-    @result ||= Hash.new
-  end
-
   def create_backer
     Backer.create(backer_params) do |backer|
-      verify_recaptcha(model: backer, message: "Failed recaptcha.") if Rails.env.production? && params["g-recaptcha-response"]
+      verify_recaptcha(model: backer, message: "Failed recaptcha.") if verify_recaptcha?
       backer.reward = reward if reward.present? && backer.value >= reward.minimum_value 
     end
+  end
+
+  def verify_recaptcha?
+    Rails.env.production? && params["g-recaptcha-response"]
   end
 
   def backer_params
@@ -115,12 +120,42 @@ class ConektaController < ApplicationController
       user: current_user,
       project: project,
       country: @visitor_country.alpha2,
-      value: ((params[:backing_amount].to_f * Rails.cache.read(project.currency.downcase).to_f) / @current_rate).round(2),
+      value: calculate_value.round(2),
       currency_value: params[:backing_amount],
       currency_code: @current_currency.iso_code,
       payment_method: 'Conekta',
       payment_token: params[:conektaTokenId]
     }
+  end
+
+  def calculate_value
+    params[:backing_amount].to_f * Rails.cache.read(project.currency.downcase).to_f / @current_rate
+  end
+
+  def customer
+    @customer ||= create_customer
+  rescue StandardError
+    nil
+  end
+
+  def create_customer
+    return nil if params[:conektaTokenId].nil?
+    Conekta::Customer.create(customer_params)
+  end
+
+  def customer_params
+    {
+      name: current_user.name,
+      email: current_user.email,
+      payment_sources: payment_sources
+    }
+  end
+
+  def payment_sources
+    [{
+      type: 'card',
+      token_id: params[:conektaTokenId]
+    }]
   end
 
   def load_current_rate
@@ -134,25 +169,4 @@ class ConektaController < ApplicationController
       @current_currency =  1.to_money("mxn").currency
     end
   end
-
-  def create_customer(token)
-    return nil unless token
-    # unnecesary begin
-    begin
-      # move attributes out, unnecesary variable
-      customer = Conekta::Customer.create({
-                                            name: current_user.name,
-                                            email: current_user.email,
-                                            payment_sources: [{
-                                              type: "card",
-                                              token_id: token
-                                            }]
-                                          })
-      # can jsut return value from previous operations
-      return customer
-    rescue Conekta::ParameterValidationError => e
-      return nil
-    end
-  end
-
 end
