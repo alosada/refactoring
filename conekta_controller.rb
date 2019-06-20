@@ -4,31 +4,7 @@ class ConektaController < ApplicationController
   before_action :load_current_rate, only: [:payment]
 
   def payment
-
-    # backer creation begins here
-    @backer = Backer.new(user: current_user, project: project, country: @visitor_country.alpha2)
-    @backer.value = ((params[:backing_amount].to_f * Rails.cache.read(@backer.project.currency.downcase).to_f) / @current_rate).round(2)
-    # first rescue block to move out
-    begin
-      reward = Reward.find(params[:reward_id])
-      if @backer.value >= reward.minimum_value
-        @backer.reward = reward
-      end
-    rescue ActiveRecord::RecordNotFound
-      @backer.reward = nil
-    end
-    @backer.currency_value = params[:backing_amount]
-    @backer.currency_code = @current_currency.iso_code
-    @backer.payment_method = "Conekta"
-    @backer.payment_token = params[:conektaTokenId]
-    @backer.save
-    verify_recaptcha(model: @backer, message: "Failed recaptcha.") if params["g-recaptcha-response"]
-    # backer creation ends here
-
-    @result = Hash.new
-
-    # cant see the else or end of this conditional, aim to make each condition a single method
-    unless @backer.errors.any?
+    unless backer.errors.any?
       # second rescue bloc to move out
       begin
         customer = create_customer(params[:conektaTokenId])
@@ -39,14 +15,14 @@ class ConektaController < ApplicationController
             customer_id: customer.id
           },
           line_items: [{
-            name: @backer.id.to_s + "-" + @backer.project.name.parameterize,
-            unit_price: @backer.value_in_cents("mxn"),
+            name: backer.id.to_s + "-" + backer.project.name.parameterize,
+            unit_price: backer.value_in_cents("mxn"),
             quantity: 1,
             antifraud_info: {
-              project_id: @backer.project.id.to_s + "_" + @backer.project.slug,
-              starts_at: @backer.project.publication_date.to_i,
-              ends_at: @backer.project.expires_at.to_i,
-              target_amount: (@backer.project.goal * 100).to_i
+              project_id: backer.project.id.to_s + "_" + backer.project.slug,
+              starts_at: backer.project.publication_date.to_i,
+              ends_at: backer.project.expires_at.to_i,
+              target_amount: (backer.project.goal * 100).to_i
             }
           }],
           charges: [{
@@ -60,11 +36,11 @@ class ConektaController < ApplicationController
         if charge.payment_status == "paid"
           # success scenario
           payment = charge.charges.first
-          @backer.update_attributes({
+          backer.update_attributes({
             transaction_id: charge.id,
             gross_amount: (payment.amount / 100.0),
             gross_amount_currency_id: payment.currency,
-            fee_amount: localize_charge_fee(payment.fee/100.0, @backer.project.currency),
+            fee_amount: localize_charge_fee(payment.fee/100.0, backer.project.currency),
             card_number: payment.payment_method.last4,
             card_brand: payment.payment_method.brand,
             card_name: payment.payment_method.name,
@@ -72,35 +48,37 @@ class ConektaController < ApplicationController
             expiration_month: payment.payment_method.exp_month,
             expiration_year: payment.payment_method.exp_year
           })
-          @backer.confirm!
-          send_successful_back_emails(@backer)
-          @result[:status] = "approved"
-          @result[:redirect] = success_conektum_path(@backer)
+          backer.confirm!
+          send_successful_back_emails(backer)
+          result[:status] = "approved"
+          result[:redirect] = success_conektum_path(backer)
         else
           #fail scenario
-          @backer.update_attributes transaction_id: charge.id, failure_code: charge.failure_code
-          @result[:status] = "declined"
-          FondeadoraMailer.failed_card_back(@backer).deliver_later!
+          backer.update_attributes transaction_id: charge.id, failure_code: charge.failure_code
+          result[:status] = "declined"
+          FondeadoraMailer.failed_card_back(backer).deliver_later!
         end
         #rescue  from earlier begin
       rescue Conekta::ErrorList => error_list
         # sets only last error in list.
         for error_detail in error_list.details do
-          @result[:status] = "declined"
-          @result[:message] = error_detail.message
+          result[:status] = "declined"
+          result[:message] = error_detail.message
         end
         # second rescue
       rescue Exception => e
-        @result[:status] = "declined"
-        @result[:message] = e.inspect
+        result[:status] = "declined"
+        result[:message] = e.inspect
       end
     else
       # second fail scenario
-      @result[:status] = "error"
-      @result[:message] = @backer.errors.full_messages
+      result[:status] = "error"
+      result[:message] = backer.errors.full_messages
     end
-    render json: @result.to_json
+    render json: result.to_json
   end
+
+  private
 
   def project
     @project ||= Project.friendly.find(params[:id])
@@ -108,7 +86,41 @@ class ConektaController < ApplicationController
     nil
   end
 
-  private
+  def reward
+    @reward ||= Reward.find(params[:reward_id])
+  rescue ActiveRecord::RecordNotFound
+    nil
+  end
+
+  def backer
+    @backer ||= create_backer
+  rescue StandardError
+    nil
+  end
+
+  def result
+    @result ||= Hash.new
+  end
+
+  def create_backer
+    Backer.create(backer_params) do |backer|
+      verify_recaptcha(model: backer, message: "Failed recaptcha.") if params["g-recaptcha-response"]
+      backer.reward = reward if reward.present? && backer.value >= reward.minimum_value 
+    end
+  end
+
+  def backer_params
+    {
+      user: current_user,
+      project: project,
+      country: @visitor_country.alpha2,
+      value: ((params[:backing_amount].to_f * Rails.cache.read(project.currency.downcase).to_f) / @current_rate).round(2),
+      currency_value: params[:backing_amount],
+      currency_code: @current_currency.iso_code,
+      payment_method: 'Conekta',
+      payment_token: params[:conektaTokenId]
+    }
+  end
 
   def load_current_rate
     # split
