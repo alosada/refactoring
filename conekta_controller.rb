@@ -97,7 +97,6 @@ class ConektaController < ApplicationController
     @result ||= Hash.new
   end
 
-
   def backer
     @backer ||= create_backer
   rescue StandardError
