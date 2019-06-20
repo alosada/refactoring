@@ -4,13 +4,9 @@ class ConektaController < ApplicationController
   before_action :load_current_rate, only: [:payment]
 
   def payment
-    # line 8 does nothing, remove.
-    params.permit(:conektaTokenId, :backing_amount, :reward_id, :id, "g-recaptcha-response")
-    # 'p' is a terrible variable name
-    p = Project.friendly.find(params[:id])
 
     # backer creation begins here
-    @backer = Backer.new(user: current_user, project: p, country: @visitor_country.alpha2)
+    @backer = Backer.new(user: current_user, project: project, country: @visitor_country.alpha2)
     @backer.value = ((params[:backing_amount].to_f * Rails.cache.read(@backer.project.currency.downcase).to_f) / @current_rate).round(2)
     # first rescue block to move out
     begin
@@ -106,6 +102,12 @@ class ConektaController < ApplicationController
     render json: @result.to_json
   end
 
+  def project
+    @project ||= Project.friendly.find(params[:id])
+  rescue ActiveRecord::RecordNotFound
+    nil
+  end
+
   private
 
   def load_current_rate
@@ -141,4 +143,3 @@ class ConektaController < ApplicationController
   end
 
 end
-
