@@ -1,14 +1,18 @@
 # -*- coding: utf-8 -*-
 class ConektaController < ApplicationController
   include Projects::BackersHelper
-  before_action :load_current_rate, only: [:payment, :cash_payment]
+  before_action :load_current_rate, only: [:payment]
 
   def payment
-    # TODO Since we do this in pretty much every payment method option we should standarize this, encapsulate it into a method.
+    # line 8 does nothing, remove.
     params.permit(:conektaTokenId, :backing_amount, :reward_id, :id, "g-recaptcha-response")
+    # 'p' is a terrible variable name
     p = Project.friendly.find(params[:id])
+
+    # backer creation begins here
     @backer = Backer.new(user: current_user, project: p, country: @visitor_country.alpha2)
     @backer.value = ((params[:backing_amount].to_f * Rails.cache.read(@backer.project.currency.downcase).to_f) / @current_rate).round(2)
+    # first rescue block to move out
     begin
       reward = Reward.find(params[:reward_id])
       if @backer.value >= reward.minimum_value
@@ -23,11 +27,16 @@ class ConektaController < ApplicationController
     @backer.payment_token = params[:conektaTokenId]
     @backer.save
     verify_recaptcha(model: @backer, message: "Failed recaptcha.") if params["g-recaptcha-response"]
-    # Up to here, is pretty much the same on every payment_method (or, should be almost the same).
+    # backer creation ends here
+
     @result = Hash.new
+
+    # cant see the else or end of this conditional, aim to make each condition a single method
     unless @backer.errors.any?
+      # second rescue bloc to move out
       begin
         customer = create_customer(params[:conektaTokenId])
+        # too much nesting ins this hash
         attributes = {
           currency: Rails.application.secrets.currency_code,
           customer_info: {
@@ -50,8 +59,10 @@ class ConektaController < ApplicationController
             }
           }]
         }
+        # we're creating an order but its called charge?
         charge = Conekta::Order.create(attributes)
         if charge.payment_status == "paid"
+          # success scenario
           payment = charge.charges.first
           @backer.update_attributes({
             transaction_id: charge.id,
@@ -70,20 +81,25 @@ class ConektaController < ApplicationController
           @result[:status] = "approved"
           @result[:redirect] = success_conektum_path(@backer)
         else
+          #fail scenario
           @backer.update_attributes transaction_id: charge.id, failure_code: charge.failure_code
           @result[:status] = "declined"
           FondeadoraMailer.failed_card_back(@backer).deliver_later!
         end
+        #rescue  from earlier begin
       rescue Conekta::ErrorList => error_list
+        # sets only last error in list.
         for error_detail in error_list.details do
           @result[:status] = "declined"
           @result[:message] = error_detail.message
         end
+        # second rescue
       rescue Exception => e
         @result[:status] = "declined"
         @result[:message] = e.inspect
       end
     else
+      # second fail scenario
       @result[:status] = "error"
       @result[:message] = @backer.errors.full_messages
     end
@@ -93,6 +109,7 @@ class ConektaController < ApplicationController
   private
 
   def load_current_rate
+    # split
     currency = session["currency"]
     if currency
       @current_rate = Rails.cache.read(currency.downcase).to_f
@@ -105,7 +122,9 @@ class ConektaController < ApplicationController
 
   def create_customer(token)
     return nil unless token
+    # unnecesary begin
     begin
+      # move attributes out, unnecesary variable
       customer = Conekta::Customer.create({
                                             name: current_user.name,
                                             email: current_user.email,
@@ -114,6 +133,7 @@ class ConektaController < ApplicationController
                                               token_id: token
                                             }]
                                           })
+      # can jsut return value from previous operations
       return customer
     rescue Conekta::ParameterValidationError => e
       return nil
