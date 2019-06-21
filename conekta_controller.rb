@@ -5,52 +5,49 @@ class ConektaController < ApplicationController
 
   def payment
     return render_json_error if preparations_failed?
-    # second rescue bloc to move out
-    begin
-      if order.payment_status == "paid"
-        # success scenario
-        charge = order.charges.first
-        backer.update_attributes({
-          transaction_id: order.id,
-          gross_amount: (charge.amount / 100.0),
-          gross_amount_currency_id: charge.currency,
-          fee_amount: localize_charge_fee(charge.fee/100.0, backer.project.currency),
-          card_number: charge.payment_method.last4,
-          card_brand: charge.payment_method.brand,
-          card_name: charge.payment_method.name,
-          card_issuer: charge.payment_method.issuer,
-          expiration_month: charge.payment_method.exp_month,
-          expiration_year: charge.payment_method.exp_year
-        })
-        backer.confirm!
-        send_successful_back_emails(backer)
-        result[:status] = "approved"
-        result[:redirect] = success_conektum_path(backer)
-      else
-        #fail scenario
-        backer.update_attributes transaction_id: order.id, failure_code: order.failure_code
-        result[:status] = "declined"
-        FondeadoraMailer.failed_card_back(backer).deliver_later!
-      end
-    rescue Exception => e
+    if order.payment_status == "paid"
+      # success scenario
+      charge = order.charges.first
+      backer.update_attributes({
+        transaction_id: order.id,
+        gross_amount: (charge.amount / 100.0),
+        gross_amount_currency_id: charge.currency,
+        fee_amount: localize_charge_fee(charge.fee/100.0, backer.project.currency),
+        card_number: charge.payment_method.last4,
+        card_brand: charge.payment_method.brand,
+        card_name: charge.payment_method.name,
+        card_issuer: charge.payment_method.issuer,
+        expiration_month: charge.payment_method.exp_month,
+        expiration_year: charge.payment_method.exp_year
+      })
+      backer.confirm!
+      send_successful_back_emails(backer)
+      result[:status] = "approved"
+      result[:redirect] = success_conektum_path(backer)
+    else
+      #fail scenario
+      backer.update_attributes transaction_id: order.id, failure_code: order.failure_code
       result[:status] = "declined"
-      result[:message] = e.inspect
+      FondeadoraMailer.failed_card_back(backer).deliver_later!
     end
     render json: result.to_json
   end
 
   private
 
-  # ORDER SUTFF -> Extract once finished.
+  # CONEKTA METHODS -> Extract once finished.
 
   def order
+    @order ||= create_order
+  rescue StandardError => e
+    nil
+  end
+
+  def create_order
     Conekta::Order.create(order_attributes)
   rescue Conekta::ErrorList => error_list
-    # sets only last error in list.
-    for error_detail in error_list.details do
-      result[:status] = "declined"
-      result[:message] = error_detail.message
-    end
+    result[:status] = "declined"
+    result[:message] = error_list.details.map {|e| e.message}.join(', ')
     nil
   end
 
@@ -59,11 +56,7 @@ class ConektaController < ApplicationController
       currency: Rails.application.secrets.currency_code,
       customer_info: { customer_id: customer.id },
       line_items: order_line_items,
-      charges: [{
-        payment_method: {
-          type: "default"
-        }
-      }]
+      charges: order_charges
     }
   end
 
@@ -85,17 +78,50 @@ class ConektaController < ApplicationController
     }
   end
 
-  # END ORDER STUFF
+  def order_charges
+    [{
+      payment_method: { type: "default"}
+    }]
+  end
+
+  def customer
+    @customer ||= create_customer
+  rescue StandardError
+    nil
+  end
+
+  def create_customer
+    return nil if params[:conektaTokenId].nil?
+    Conekta::Customer.create(customer_params)
+  end
+
+  def customer_params
+    {
+      name: current_user.name,
+      email: current_user.email,
+      payment_sources: payment_sources
+    }
+  end
+
+  def payment_sources
+    [{
+      type: 'card',
+      token_id: params[:conektaTokenId]
+    }]
+  end
+
+  # END CONEKTA METHODS
 
   def preparations_failed?
     project.nil? ||
     backer.nil? ||
     backer.errors.any? ||
-    customer.nil?
+    customer.nil? ||
+    order.nil?
   end
 
   def render_json_error
-    result[:status] = 'error'
+    result[:status] ||= 'error'
     result[:message] =  @error || 'Something went wrong :('
     render json: result.to_json
   end
@@ -152,32 +178,6 @@ class ConektaController < ApplicationController
 
   def calculate_value
     params[:backing_amount].to_f * Rails.cache.read(project.currency.downcase).to_f / @current_rate
-  end
-
-  def customer
-    @customer ||= create_customer
-  rescue StandardError
-    nil
-  end
-
-  def create_customer
-    return nil if params[:conektaTokenId].nil?
-    Conekta::Customer.create(customer_params)
-  end
-
-  def customer_params
-    {
-      name: current_user.name,
-      email: current_user.email,
-      payment_sources: payment_sources
-    }
-  end
-
-  def payment_sources
-    [{
-      type: 'card',
-      token_id: params[:conektaTokenId]
-    }]
   end
 
   def load_current_rate
