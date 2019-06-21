@@ -30,22 +30,21 @@ class ConektaController < ApplicationController
           }
         }]
       }
-      # we're creating an order but its called charge?
-      charge = Conekta::Order.create(attributes)
-      if charge.payment_status == "paid"
+      order = Conekta::Order.create(attributes)
+      if order.payment_status == "paid"
         # success scenario
-        payment = charge.charges.first
+        charge = order.charges.first
         backer.update_attributes({
-          transaction_id: charge.id,
-          gross_amount: (payment.amount / 100.0),
-          gross_amount_currency_id: payment.currency,
-          fee_amount: localize_charge_fee(payment.fee/100.0, backer.project.currency),
-          card_number: payment.payment_method.last4,
-          card_brand: payment.payment_method.brand,
-          card_name: payment.payment_method.name,
-          card_issuer: payment.payment_method.issuer,
-          expiration_month: payment.payment_method.exp_month,
-          expiration_year: payment.payment_method.exp_year
+          transaction_id: order.id,
+          gross_amount: (charge.amount / 100.0),
+          gross_amount_currency_id: charge.currency,
+          fee_amount: localize_charge_fee(charge.fee/100.0, backer.project.currency),
+          card_number: charge.payment_method.last4,
+          card_brand: charge.payment_method.brand,
+          card_name: charge.payment_method.name,
+          card_issuer: charge.payment_method.issuer,
+          expiration_month: charge.payment_method.exp_month,
+          expiration_year: charge.payment_method.exp_year
         })
         backer.confirm!
         send_successful_back_emails(backer)
@@ -53,7 +52,7 @@ class ConektaController < ApplicationController
         result[:redirect] = success_conektum_path(backer)
       else
         #fail scenario
-        backer.update_attributes transaction_id: charge.id, failure_code: charge.failure_code
+        backer.update_attributes transaction_id: order.id, failure_code: order.failure_code
         result[:status] = "declined"
         FondeadoraMailer.failed_card_back(backer).deliver_later!
       end
