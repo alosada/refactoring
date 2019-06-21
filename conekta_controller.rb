@@ -7,30 +7,6 @@ class ConektaController < ApplicationController
     return render_json_error if preparations_failed?
     # second rescue bloc to move out
     begin
-      # too much nesting ins this hash
-      attributes = {
-        currency: Rails.application.secrets.currency_code,
-        customer_info: {
-          customer_id: customer.id
-        },
-        line_items: [{
-          name: backer.id.to_s + "-" + backer.project.name.parameterize,
-          unit_price: backer.value_in_cents("mxn"),
-          quantity: 1,
-          antifraud_info: {
-            project_id: backer.project.id.to_s + "_" + backer.project.slug,
-            starts_at: backer.project.publication_date.to_i,
-            ends_at: backer.project.expires_at.to_i,
-            target_amount: (backer.project.goal * 100).to_i
-          }
-        }],
-        charges: [{
-          payment_method: {
-            type: "default"
-          }
-        }]
-      }
-      order = Conekta::Order.create(attributes)
       if order.payment_status == "paid"
         # success scenario
         charge = order.charges.first
@@ -56,14 +32,6 @@ class ConektaController < ApplicationController
         result[:status] = "declined"
         FondeadoraMailer.failed_card_back(backer).deliver_later!
       end
-      #rescue  from earlier begin
-    rescue Conekta::ErrorList => error_list
-      # sets only last error in list.
-      for error_detail in error_list.details do
-        result[:status] = "declined"
-        result[:message] = error_detail.message
-      end
-      # second rescue
     rescue Exception => e
       result[:status] = "declined"
       result[:message] = e.inspect
@@ -72,6 +40,52 @@ class ConektaController < ApplicationController
   end
 
   private
+
+  # ORDER SUTFF -> Extract once finished.
+
+  def order
+    Conekta::Order.create(order_attributes)
+  rescue Conekta::ErrorList => error_list
+    # sets only last error in list.
+    for error_detail in error_list.details do
+      result[:status] = "declined"
+      result[:message] = error_detail.message
+    end
+    nil
+  end
+
+  def order_attributes
+    {
+      currency: Rails.application.secrets.currency_code,
+      customer_info: { customer_id: customer.id },
+      line_items: order_line_items,
+      charges: [{
+        payment_method: {
+          type: "default"
+        }
+      }]
+    }
+  end
+
+  def order_line_items
+    [{
+      name: backer.id.to_s + "-" + backer.project.name.parameterize,
+      unit_price: backer.value_in_cents("mxn"),
+      quantity: 1,
+      antifraud_info: order_antifraud_info
+    }]
+  end
+
+  def order_antifraud_info
+    {
+      project_id: backer.project.id.to_s + "_" + backer.project.slug,
+      starts_at: backer.project.publication_date.to_i,
+      ends_at: backer.project.expires_at.to_i,
+      target_amount: (backer.project.goal * 100).to_i
+    }
+  end
+
+  # END ORDER STUFF
 
   def preparations_failed?
     project.nil? ||

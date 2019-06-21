@@ -24,6 +24,19 @@ RSpec.describe ConektaController do
       status = JSON.parse(response.body)['status']
       expect(status).to eq 'approved'
     end
+    it 'processes payment but is declined' do
+      parameters = {
+        backing_amount: '100.0',
+        reward_id: '110902',
+        conektaTokenId: 'tok_test_card_declined',
+        controller: 'conekta',
+        action: 'payment',
+        id: 'mexico-on-rails'
+      }
+      post :payment, parameters
+      status = JSON.parse(response.body)['status']
+      expect(status).to eq 'declined'
+    end
   end
 end
 
