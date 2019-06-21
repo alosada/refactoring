@@ -4,8 +4,7 @@ class ConektaController < ApplicationController
   before_action :load_current_rate, only: [:payment]
 
   def payment
-    # validation is getting too long, extract.
-    return render_json_error if project.nil? || backer.nil? || backer.errors.any? || customer.nil?
+    return render_json_error if preparations_failed?
     # second rescue bloc to move out
     begin
       # too much nesting ins this hash
@@ -75,21 +74,30 @@ class ConektaController < ApplicationController
 
   private
 
+  def preparations_failed?
+    project.nil? ||
+    backer.nil? ||
+    backer.errors.any? ||
+    customer.nil?
+  end
+
   def render_json_error
     result[:status] = 'error'
-    result[:message] = 'Something went wrong :('
+    result[:message] =  @error || 'Something went wrong :('
     render json: result.to_json
   end
 
   def project
     @project ||= Project.friendly.find(params[:id])
   rescue ActiveRecord::RecordNotFound
+    @error = 'Project missing.'
     nil
   end
 
   def reward
     @reward ||= Reward.find(params[:reward_id])
   rescue ActiveRecord::RecordNotFound
+    @error = 'Reward missing.'
     nil
   end
 
@@ -100,6 +108,8 @@ class ConektaController < ApplicationController
   def backer
     @backer ||= create_backer
   rescue StandardError
+    @error = backer.errors.full_messages.join(', ') if backer.errors.any?
+    @error ||= 'Backer missing.'
     nil
   end
 
