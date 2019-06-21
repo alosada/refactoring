@@ -5,35 +5,46 @@ class ConektaController < ApplicationController
 
   def payment
     return render_json_error if preparations_failed?
-    if order.payment_status == "paid"
-      # success scenario
-      charge = order.charges.first
-      backer.update_attributes({
-        transaction_id: order.id,
-        gross_amount: (charge.amount / 100.0),
-        gross_amount_currency_id: charge.currency,
-        fee_amount: localize_charge_fee(charge.fee/100.0, backer.project.currency),
-        card_number: charge.payment_method.last4,
-        card_brand: charge.payment_method.brand,
-        card_name: charge.payment_method.name,
-        card_issuer: charge.payment_method.issuer,
-        expiration_month: charge.payment_method.exp_month,
-        expiration_year: charge.payment_method.exp_year
-      })
-      backer.confirm!
-      send_successful_back_emails(backer)
-      result[:status] = "approved"
-      result[:redirect] = success_conektum_path(backer)
-    else
-      #fail scenario
-      backer.update_attributes transaction_id: order.id, failure_code: order.failure_code
-      result[:status] = "declined"
-      FondeadoraMailer.failed_card_back(backer).deliver_later!
-    end
+    order_post_process(order)
     render json: result.to_json
   end
 
   private
+
+  def order_post_process(order)
+    return paid_order_post_process if order.payment_status == "paid"
+    failed_order_post_process
+  end
+
+  def paid_order_post_process
+    backer.update_attributes(back_success_attributes)
+    backer.confirm!
+    send_successful_back_emails(backer)
+    result[:status] = "approved"
+    result[:redirect] = success_conektum_path(backer)
+  end
+
+  def back_success_attributes
+    charge = order.charges.first
+    {
+      transaction_id: order.id,
+      gross_amount: (charge.amount / 100.0),
+      gross_amount_currency_id: charge.currency,
+      fee_amount: localize_charge_fee(charge.fee/100.0, backer.project.currency),
+      card_number: charge.payment_method.last4,
+      card_brand: charge.payment_method.brand,
+      card_name: charge.payment_method.name,
+      card_issuer: charge.payment_method.issuer,
+      expiration_month: charge.payment_method.exp_month,
+      expiration_year: charge.payment_method.exp_year
+    }
+  end
+
+  def failed_order_post_process
+    backer.update_attributes transaction_id: order.id, failure_code: order.failure_code
+    result[:status] = "declined"
+    FondeadoraMailer.failed_card_back(backer).deliver_later!
+  end
 
   # CONEKTA METHODS -> Extract once finished.
 
@@ -168,7 +179,7 @@ class ConektaController < ApplicationController
       user: current_user,
       project: project,
       country: @visitor_country.alpha2,
-      value: calculate_value.round(2),
+      value: calculate_backer_value.round(2),
       currency_value: params[:backing_amount],
       currency_code: @current_currency.iso_code,
       payment_method: 'Conekta',
@@ -176,19 +187,22 @@ class ConektaController < ApplicationController
     }
   end
 
-  def calculate_value
+  def calculate_backer_value
     params[:backing_amount].to_f * Rails.cache.read(project.currency.downcase).to_f / @current_rate
   end
 
   def load_current_rate
-    # split
-    currency = session["currency"]
-    if currency
-      @current_rate = Rails.cache.read(currency.downcase).to_f
-      @current_currency = 1.to_money(currency).currency
-    else
-      @current_rate = @mxn_rate
-      @current_currency =  1.to_money("mxn").currency
-    end
+    return currency_from_sessions if session["currency"]
+    default_currency
+  end
+
+  def currency_from_sessions
+    @current_rate = Rails.cache.read(session["currency"].downcase).to_f
+    @current_currency = 1.to_money(session["currency"]).currency
+  end
+
+  def default_currency
+    @current_rate = @mxn_rate
+    @current_currency =  1.to_money("mxn").currency
   end
 end
